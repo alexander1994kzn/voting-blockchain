@@ -3,10 +3,11 @@ import json
 import datetime
 import random
 import os
+import sqlite3
 from typing import List, Dict, Tuple
 from flask import Flask, render_template_string, request, session, jsonify
 
-# ---------------------------- БЛОКЧЕЙН ----------------------------
+# ---------------------------- CAPTCHA ----------------------------
 class Captcha:
     @staticmethod
     def generate() -> Tuple[str, int]:
@@ -29,19 +30,20 @@ class Captcha:
         return user_ans == correct
 
 
+# ---------------------------- БЛОКЧЕЙН С SQLITE ----------------------------
 class Block:
-    def __init__(self, index: int, votes: List[Dict], timestamp: str, prev_hash: str, nonce: int = 0):
+    def __init__(self, index: int, votes_json: str, timestamp: str, prev_hash: str, hash_val: str, nonce: int = 0):
         self.index = index
-        self.votes = votes
+        self.votes_json = votes_json   # храним JSON-строку голосов
         self.timestamp = timestamp
         self.prev_hash = prev_hash
+        self.hash = hash_val
         self.nonce = nonce
-        self.hash = self.compute_hash()
 
     def compute_hash(self) -> str:
         data = {
             "index": self.index,
-            "votes": self.votes,
+            "votes": json.loads(self.votes_json),
             "timestamp": self.timestamp,
             "prev_hash": self.prev_hash,
             "nonce": self.nonce
@@ -49,121 +51,168 @@ class Block:
         block_str = json.dumps(data, sort_keys=True).encode()
         return hashlib.sha256(block_str).hexdigest()
 
-    def mine_block(self, difficulty: int):
+    @staticmethod
+    def mine_new_block(index: int, votes_list: List[Dict], timestamp: str, prev_hash: str, difficulty: int):
+        votes_json = json.dumps(votes_list)
+        nonce = 0
         target = "0" * difficulty
-        while self.hash[:difficulty] != target:
-            self.nonce += 1
-            self.hash = self.compute_hash()
+        while True:
+            data = {
+                "index": index,
+                "votes": votes_list,
+                "timestamp": timestamp,
+                "prev_hash": prev_hash,
+                "nonce": nonce
+            }
+            block_str = json.dumps(data, sort_keys=True).encode()
+            hash_val = hashlib.sha256(block_str).hexdigest()
+            if hash_val[:difficulty] == target:
+                return Block(index, votes_json, timestamp, prev_hash, hash_val, nonce)
+            nonce += 1
 
 
-class Blockchain:
-    def __init__(self, difficulty: int = 3, storage_file: str = "blockchain.json"):
+class BlockchainDB:
+    def __init__(self, db_path: str = "blockchain.db", difficulty: int = 3):
+        self.db_path = db_path
         self.difficulty = difficulty
-        self.storage_file = storage_file
-        self.chain: List[Block] = []
-        self.voter_records: Dict[str, bool] = {}
-        self.load_from_file()          # восстанавливаем цепочку из файла
-        if not self.chain:
+        self.init_db()
+        if self.get_last_block() is None:
             self.create_genesis_block()
-            self.save_to_file()
+
+    def init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                index INTEGER UNIQUE,
+                votes_json TEXT,
+                timestamp TEXT,
+                prev_hash TEXT,
+                hash TEXT,
+                nonce INTEGER
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS voters (
+                voter_id TEXT PRIMARY KEY
+            )
+        ''')
+        conn.commit()
+        conn.close()
 
     def create_genesis_block(self):
-        genesis = Block(0, [], str(datetime.datetime.now()), "0")
-        genesis.mine_block(self.difficulty)
-        self.chain.append(genesis)
+        genesis = Block.mine_new_block(0, [], str(datetime.datetime.now()), "0", self.difficulty)
+        self.add_block(genesis)
 
-    def get_latest_block(self) -> Block:
-        return self.chain[-1]
+    def add_block(self, block: Block):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO blocks (index, votes_json, timestamp, prev_hash, hash, nonce)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (block.index, block.votes_json, block.timestamp, block.prev_hash, block.hash, block.nonce))
+        conn.commit()
+        conn.close()
+
+    def get_last_block(self) -> Block | None:
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('SELECT index, votes_json, timestamp, prev_hash, hash, nonce FROM blocks ORDER BY index DESC LIMIT 1')
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return Block(row[0], row[1], row[2], row[3], row[4], row[5])
+        return None
+
+    def get_all_blocks(self) -> List[Block]:
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('SELECT index, votes_json, timestamp, prev_hash, hash, nonce FROM blocks ORDER BY index')
+        rows = c.fetchall()
+        conn.close()
+        return [Block(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows]
+
+    def has_voter(self, voter_id: str) -> bool:
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('SELECT 1 FROM voters WHERE voter_id = ?', (voter_id,))
+        exists = c.fetchone() is not None
+        conn.close()
+        return exists
+
+    def add_voter(self, voter_id: str):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute('INSERT INTO voters (voter_id) VALUES (?)', (voter_id,))
+        conn.commit()
+        conn.close()
 
     def add_vote(self, voter_id: str, candidate: str) -> bool:
-        if voter_id in self.voter_records:
+        if self.has_voter(voter_id):
             return False
+        last_block = self.get_last_block()
+        new_index = last_block.index + 1
         vote = {
             "voter_id": voter_id,
             "candidate": candidate,
             "timestamp": str(datetime.datetime.now())
         }
-        prev_block = self.get_latest_block()
-        new_block = Block(
-            index=prev_block.index + 1,
-            votes=[vote],
-            timestamp=str(datetime.datetime.now()),
-            prev_hash=prev_block.hash
-        )
-        new_block.mine_block(self.difficulty)
-        self.chain.append(new_block)
-        self.voter_records[voter_id] = True
-        self.save_to_file()
+        # Получаем все предыдущие голоса? Нет, каждый блок содержит только один голос (для простоты)
+        # Но можно собрать все голоса из последнего блока? Нет, мы храним один голос на блок.
+        # Однако для проверки целостности нам нужно сохранить список голосов в блоке. Пусть будет один голос.
+        new_block = Block.mine_new_block(new_index, [vote], str(datetime.datetime.now()), last_block.hash, self.difficulty)
+        self.add_block(new_block)
+        self.add_voter(voter_id)
         return True
 
     def get_results(self) -> Dict[str, int]:
         results = {}
-        for block in self.chain:
-            for vote in block.votes:
-                cand = vote["candidate"]
+        blocks = self.get_all_blocks()
+        for block in blocks:
+            votes = json.loads(block.votes_json)
+            for v in votes:
+                cand = v["candidate"]
                 results[cand] = results.get(cand, 0) + 1
         return results
 
     def is_chain_valid(self) -> bool:
-        for i in range(1, len(self.chain)):
-            curr = self.chain[i]
-            prev = self.chain[i-1]
-            if curr.hash != curr.compute_hash():
+        blocks = self.get_all_blocks()
+        for i, block in enumerate(blocks):
+            # проверка хеша
+            if block.hash != block.compute_hash():
+                print(f"Block {block.index} hash mismatch")
                 return False
-            if curr.prev_hash != prev.hash:
-                return False
-            if curr.hash[:self.difficulty] != "0" * self.difficulty:
+            if i > 0:
+                prev = blocks[i-1]
+                if block.prev_hash != prev.hash:
+                    print(f"Block {block.index} prev_hash mismatch")
+                    return False
+            if block.hash[:self.difficulty] != "0" * self.difficulty:
+                print(f"Block {block.index} invalid PoW")
                 return False
         return True
 
-    def to_dict(self) -> List[Dict]:
+    def to_dict_list(self) -> List[Dict]:
+        blocks = self.get_all_blocks()
         return [{
             "index": b.index,
-            "votes": b.votes,
+            "votes": json.loads(b.votes_json),
             "timestamp": b.timestamp,
             "prev_hash": b.prev_hash,
             "hash": b.hash,
             "nonce": b.nonce
-        } for b in self.chain]
-
-    def save_to_file(self):
-        data = self.to_dict()
-        with open(self.storage_file, "w") as f:
-            json.dump(data, f, indent=2)
-
-    def load_from_file(self):
-        if not os.path.exists(self.storage_file):
-            return
-        try:
-            with open(self.storage_file, "r") as f:
-                data = json.load(f)
-            self.chain = []
-            for block_dict in data:
-                block = Block(
-                    index=block_dict["index"],
-                    votes=block_dict["votes"],
-                    timestamp=block_dict["timestamp"],
-                    prev_hash=block_dict["prev_hash"],
-                    nonce=block_dict["nonce"]
-                )
-                block.hash = block_dict["hash"]   # восстановить хеш
-                self.chain.append(block)
-            # восстановить voter_records из цепочки
-            self.voter_records = {}
-            for block in self.chain:
-                for vote in block.votes:
-                    self.voter_records[vote["voter_id"]] = True
-        except Exception as e:
-            print("Ошибка загрузки блокчейна:", e)
+        } for b in blocks]
 
 
 # ---------------------------- ВЕБ-ПРИЛОЖЕНИЕ ----------------------------
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "supersecret-key-for-voting")
 
-blockchain = Blockchain(difficulty=3)
+# Инициализация блокчейна с SQLite
+blockchain = BlockchainDB(db_path="blockchain.db", difficulty=3)
 
-# HTML-шаблоны (встроенные)
+# HTML-шаблоны (те же, что и ранее, но с небольшими улучшениями)
 MAIN_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -185,8 +234,6 @@ MAIN_PAGE = """
         .message { padding: 10px; border-radius: 6px; margin-bottom: 15px; text-align: center; }
         .error { background: #f8d7da; color: #721c24; }
         .success { background: #d4edda; color: #155724; }
-        .info { background: #d1ecf1; color: #0c5460; }
-        hr { margin: 20px 0; }
         footer { text-align: center; margin-top: 20px; font-size: 12px; color: #7f8c8d; }
     </style>
 </head>
@@ -322,7 +369,6 @@ BLOCKCHAIN_PAGE = """
 </html>
 """
 
-
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -358,7 +404,6 @@ def index():
 
         # CAPTCHA пройдена
         success = blockchain.add_vote(voter_id, candidate)
-        # Генерируем новую капчу для следующего голосования (если пользователь захочет голосовать снова)
         q, a = Captcha.generate()
         session['captcha_q'] = q
         session['captcha_a'] = a
@@ -368,7 +413,7 @@ def index():
         else:
             return render_template_string(MAIN_PAGE, captcha_q=q, message=f"❌ Избиратель {voter_id} уже проголосовал!", msg_type="error")
 
-    # GET: показываем форму с новой капчей
+    # GET
     q, a = Captcha.generate()
     session['captcha_q'] = q
     session['captcha_a'] = a
@@ -385,14 +430,15 @@ def results():
 
 @app.route('/blockchain')
 def blockchain_view():
-    chain_data = blockchain.to_dict()
+    chain_data = blockchain.to_dict_list()
     is_valid = blockchain.is_chain_valid()
     return render_template_string(BLOCKCHAIN_PAGE, chain=chain_data, is_valid=is_valid)
 
 
 @app.route('/api/chain')
 def api_chain():
-    return jsonify(blockchain.to_dict())
+    return jsonify(blockchain.to_dict_list())
+
 
 @app.route('/api/results')
 def api_results():
@@ -402,3 +448,4 @@ def api_results():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
