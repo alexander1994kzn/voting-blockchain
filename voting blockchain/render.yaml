@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: blockchain-voting
+    runtime: python
+    repo: https://github.com/YOUR_USERNAME/blockchain-voting
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: SECRET_KEY
+        generateValue: true

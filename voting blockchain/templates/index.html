@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Блокчейн-голосование с капчей</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: auto;
+        }
+        h1 {
+            text-align: center;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        .sub {
+            text-align: center;
+            color: rgba(255,255,255,0.9);
+            margin-bottom: 30px;
+        }
+        .grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 25px;
+            justify-content: center;
+        }
+        .card {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            padding: 25px;
+            flex: 1;
+            min-width: 320px;
+            transition: transform 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-5px);
+        }
+        .card h2 {
+            margin-top: 0;
+            border-left: 5px solid #667eea;
+            padding-left: 15px;
+            color: #333;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            font-weight: bold;
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+        }
+        input, select, button {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 1rem;
+            transition: 0.2s;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        button:hover {
+            transform: scale(0.98);
+        }
+        .vote-btn {
+            margin-top: 10px;
+        }
+        .result-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        .candidate-name {
+            font-weight: bold;
+            font-size: 1.1rem;
+        }
+        .candidate-votes {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 5px 15px;
+            border-radius: 25px;
+            font-weight: bold;
+        }
+        .block {
+            background: #f9f9f9;
+            border-left: 4px solid #764ba2;
+            margin: 15px 0;
+            padding: 15px;
+            font-family: monospace;
+            font-size: 12px;
+            overflow-x: auto;
+            border-radius: 12px;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 12px;
+            text-align: center;
+            margin-top: 20px;
+            font-weight: bold;
+        }
+        .valid {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .invalid {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        button.small {
+            background: #6c757d;
+            width: auto;
+            margin-top: 10px;
+            padding: 8px 20px;
+        }
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            color: rgba(255,255,255,0.8);
+        }
+        .captcha-container {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        #captchaImage {
+            max-width: 100%;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 10px;
+        }
+        .refresh-captcha {
+            background: #28a745;
+            margin-top: 5px;
+            padding: 8px;
+        }
+        .error-msg {
+            color: #dc3545;
+            font-size: 0.85rem;
+            margin-top: 5px;
+        }
+        @media (max-width: 768px) {
+            .grid {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🗳️ Блокчейн-голосование с защитой от ботов</h1>
+    <div class="sub">🔗 Неизменяемый блокчейн + 🤖 Капча для защиты</div>
+
+    <div class="grid">
+        <!-- Форма голосования -->
+        <div class="card">
+            <h2>📝 Проголосовать</h2>
+            <div class="form-group">
+                <label>ID избирателя (уникальный)</label>
+                <input type="text" id="voterId" placeholder="например, voter_001">
+            </div>
+            <div class="form-group">
+                <label>Кандидат</label>
+                <select id="candidateSelect">
+                    <option value="">-- Загружаем кандидатов --</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Цифровая подпись</label>
+                <input type="text" id="signature" placeholder="подпись должна содержать ваш ID">
+                <div class="error-msg">* Подпись должна содержать ID избирателя</div>
+            </div>
+            
+            <!-- Капча -->
+            <div class="captcha-container">
+                <label>Введите код с картинки</label>
+                <img id="captchaImage" alt="Captcha" style="cursor: pointer;">
+                <input type="text" id="captchaInput" placeholder="Введите символы" style="margin-top: 10px;">
+                <button id="refreshCaptcha" class="refresh-captcha">🔄 Обновить капчу</button>
+            </div>
+            
+            <button id="voteBtn" class="vote-btn">✅ Отдать голос</button>
+            <div id="voteMessage" style="margin-top: 15px;"></div>
+        </div>
+
+        <!-- Результаты -->
+        <div class="card">
+            <h2>📊 Текущие результаты</h2>
+            <div id="resultsContainer">Загрузка...</div>
+            <button id="refreshResults" class="small">🔄 Обновить результаты</button>
+        </div>
+
+        <!-- Проверка блокчейна -->
+        <div class="card">
+            <h2>🔗 Целостность блокчейна</h2>
+            <div id="verificationStatus">Проверка...</div>
+            <button id="verifyBtn" class="small">🔍 Проверить сейчас</button>
+            <hr>
+            <button id="showBlockchainBtn" class="small" style="background:#ff9800;">📦 Показать всю цепочку</button>
+        </div>
+    </div>
+
+    <!-- Блокчейн-эксплорер -->
+    <div id="blockchainView" style="display:none; margin-top: 30px;">
+        <div class="card">
+            <h2>📜 Блокчейн (неизменяемый реестр)</h2>
+            <div id="blocksList"></div>
+        </div>
+    </div>
+    <footer>
+        ⚡ Каждый голос записывается в блок с Proof-of-Work. Капча защищает от автоматических ботов.
+    </footer>
+</div>
+
+<script>
+    let currentCaptcha = '';
+    
+    // Загрузка капчи
+    async function loadCaptcha() {
+        try {
+            const response = await fetch('/captcha');
+            const data = await response.json();
+            document.getElementById('captchaImage').src = data.image;
+        } catch (error) {
+            console.error('Ошибка загрузки капчи:', error);
+        }
+    }
+    
+    // Загрузка кандидатов
+    async function loadCandidates() {
+        try {
+            const resp = await fetch('/api/candidates');
+            const candidates = await resp.json();
+            const select = document.getElementById('candidateSelect');
+            select.innerHTML = '<option value="">-- Выберите кандидата --</option>';
+            candidates.forEach(c => {
+                const option = document.createElement('option');
+                option.value = c;
+                option.textContent = c;
+                select.appendChild(option);
+            });
+        } catch(e) {
+            console.error(e);
+        }
+    }
+    
+    // Обновление результатов
+    async function refreshResults() {
+        try {
+            const resp = await fetch('/api/results');
+            const results = await resp.json();
+            const container = document.getElementById('resultsContainer');
+            if (Object.keys(results).length === 0) {
+                container.innerHTML = '<p>Пока нет голосов</p>';
+            } else {
+                let html = '';
+                for (const [candidate, votes] of Object.entries(results)) {
+                    html += `<div class="result-item">
+                                <span class="candidate-name">${candidate}</span>
+                                <span class="candidate-votes">${votes} голос(ов)</span>
+                             </div>`;
+                }
+                container.innerHTML = html;
+            }
+        } catch(e) {
+            document.getElementById('resultsContainer').innerHTML = '<p class="error-msg">Ошибка загрузки</p>';
+        }
+    }
+    
+    // Проверка блокчейна
+    async function verifyBlockchain() {
+        try {
+            const resp = await fetch('/api/verify');
+            const data = await resp.json();
+            const statusDiv = document.getElementById('verificationStatus');
+            if (data.valid) {
+                statusDiv.innerHTML = '<div class="status valid">✅ Блокчейн валиден! Все хеши корректны.</div>';
+            } else {
+                statusDiv.innerHTML = '<div class="status invalid">❌ Блокчейн НЕВАЛИДЕН! Обнаружена подделка.</div>';
+            }
+        } catch(e) {
+            document.getElementById('verificationStatus').innerHTML = '<div class="status invalid">Ошибка соединения</div>';
+        }
+    }
+    
+    // Показать блокчейн
+    async function showBlockchain() {
+        try {
+            const resp = await fetch('/api/blockchain');
+            const data = await resp.json();
+            const chain = data.chain;
+            const container = document.getElementById('blocksList');
+            const viewDiv = document.getElementById('blockchainView');
+            
+            if (!chain || chain.length === 0) {
+                container.innerHTML = '<p>Нет блоков</p>';
+            } else {
+                let html = '';
+                for (const block of chain) {
+                    html += `<div class="block">
+                                <strong>🔹 Блок #${block.index}</strong> (nonce: ${block.nonce})<br>
+                                <strong>Хеш:</strong> ${block.hash}<br>
+                                <strong>Пред. хеш:</strong> ${block.previous_hash}<br>
+                                <strong>Время:</strong> ${block.timestamp}<br>
+                                <strong>Голосов:</strong> ${block.votes.length}<br>
+                                <details><summary>📄 Показать голоса</summary>
+                                <pre>${JSON.stringify(block.votes, null, 2)}</pre>
+                                </details>
+                              </div>`;
+                }
+                container.innerHTML = html;
+            }
+            viewDiv.style.display = 'block';
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        } catch(e) {
+            alert('Ошибка: ' + e.message);
+        }
+    }
+    
+    // Отправка голоса
+    async function castVote() {
+        const voterId = document.getElementById('voterId').value.trim();
+        const candidate = document.getElementById('candidateSelect').value;
+        let signature = document.getElementById('signature').value.trim();
+        const captcha = document.getElementById('captchaInput').value.trim();
+        
+        if (!voterId || !candidate || !signature || !captcha) {
+            document.getElementById('voteMessage').innerHTML = '<span style="color:red;">Заполните все поля!</span>';
+            return;
+        }
+        
+        if (!signature.includes(voterId)) {
+            document.getElementById('voteMessage').innerHTML = '<span style="color:red;">Подпись должна содержать ваш ID!</span>';
+            return;
+        }
+        
+        const voteBtn = document.getElementById('voteBtn');
+        voteBtn.disabled = true;
+        document.getElementById('voteMessage').innerHTML = '⏳ Отправка голоса...';
+        
+        try {
+            const resp = await fetch('/api/vote', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    voter_id: voterId, 
+                    candidate, 
+                    signature,
+                    captcha: captcha
+                })
+            });
+            const result = await resp.json();
+            if (result.success) {
+                document.getElementById('voteMessage').innerHTML = '<span style="color:green;">✔ Голос успешно записан в блокчейн!</span>';
+                document.getElementById('voterId').value = '';
+                document.getElementById('signature').value = '';
+                document.getElementById('captchaInput').value = '';
+                await refreshResults();
+                await verifyBlockchain();
+                await loadCaptcha(); // Новая капча после успешного голосования
+                if (document.getElementById('blockchainView').style.display === 'block') {
+                    await showBlockchain();
+                }
+            } else {
+                document.getElementById('voteMessage').innerHTML = `<span style="color:red;">❌ Ошибка: ${result.error}</span>`;
+                await loadCaptcha(); // Обновляем капчу при ошибке
+            }
+        } catch (err) {
+            document.getElementById('voteMessage').innerHTML = '<span style="color:red;">Ошибка соединения</span>';
+        } finally {
+            voteBtn.disabled = false;
+        }
+    }
+    
+    // Инициализация
+    document.getElementById('voteBtn').addEventListener('click', castVote);
+    document.getElementById('refreshResults').addEventListener('click', refreshResults);
+    document.getElementById('verifyBtn').addEventListener('click', verifyBlockchain);
+    document.getElementById('showBlockchainBtn').addEventListener('click', showBlockchain);
+    document.getElementById('refreshCaptcha').addEventListener('click', loadCaptcha);
+    document.getElementById('captchaImage').addEventListener('click', loadCaptcha);
+    
+    // Загрузка при старте
+    loadCandidates();
+    refreshResults();
+    verifyBlockchain();
+    loadCaptcha();
+</script>
+</body>
+</html>
